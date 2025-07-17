@@ -63,7 +63,7 @@ The main changes in v3 compared to v2 are:
 - <mark>Begin using river-route (python) instead of RAPID (user-compiled fortran) for matrix muskingum routing???</mark>
 - <mark>Implement non-linear routing???</mark>
 - <mark>1 hourly average forecast for flash flood warnings???</mark>
-- <mark>WMO, Google, US Gov partnerships which led to producing ....???</mark>
+- <mark>WMO, Google, FFGS....???</mark>
 
 ## Available Products
 
