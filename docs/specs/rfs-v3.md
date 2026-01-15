@@ -1,12 +1,12 @@
-# RFS V3
+## RFS V3
 
 This is a draft of the RFS v3 specifications. It is not complete and is subject to change.
 
 Documentation for the River Forecast System version 3, RFS v3.
 
 - Model Version: 3.0
-- <mark>Launch Date: TBD</mark>
-- <mark>End Date: TBD</mark>
+- ==Launch Date: TBD==
+- ==End Date: TBD==
 
 | Property                       | Value                               |
 |--------------------------------|-------------------------------------|
@@ -15,76 +15,199 @@ Documentation for the River Forecast System version 3, RFS v3.
 | Forecast Length                | 15 days                             |
 | Forecast Time Step             | 3 hours                             |
 | Retrospective Start            | 1940-01-01                          |
-| Retrospective Update           | 1xWeekly, Sunday 00:00 UTC          |
+| Retrospective Update           | daily at 00:00 UTC                  |
 | Retrospective Native Time Step | 1 hourly average                    |
 
-## Journal Papers
-
-- <mark>TBD</mark>
-
-## Conceptual explanation of the model
-
-RFS produces 6 main datasets:
-
-1. Hydrography (static)
-2. Routing configs (static)
-3. Daily flood forecasts
-4. Flash flood forecasts
-5. Retrospective simulation
-6. Flood maps
-
-RFS data is available in the following ways:
-
-1. https://hydroviewer.geoglows.org
-2. https://geoglows.ecmwf.int
-3. AWS S3 buckets
-4. geoglows Python package
-5. ArcGIS Living Atlas web map layer
-
-The forecasts and retrospective simulations are now coupled together. Forecasts are an extension of the retrospective simulation. Each day the retrospective
-simulation is updated, then 5 simulations are run for first 24 hours of runoff predictions in the days between the retrospective simulation's end and the
-present. The initialization value of the forecast in each 5 day gap run is the ensemble average at the end of the 24 hours. The final initialization value of
-the 5 days is used to kick off the daily 15-day forecast. The retrospective simulation covers 1940-01-01 to near real time with 5 days of lag. It was
-initialized in 1940 from the average of all January 1 values in the period 1950-2019 or 70 full years.
-
-**_Computations occur where???_**
-
-## Model Version Improvements
+### Summary of Changes
 
 The main changes in v3 compared to v2 are:
 
-- Forecasts and retrospective simulations are tightly coupled using shared initializations
-- Total streams about 6 Million. Modified the v2 streams to remove about 800k streams in the middle of deserts, within lakes, oceans, and other inappropriate areas.
+- Anticipated use of HydroSHEDS v2 Hydrography
+- Forecasts and retrospective simulations use a shared initializations
 - Upgrading to use the newest IFS version, 50R1, including use of the native octahedral, or reduced gaussian grid, native to the IFS version.
-- Discontinue the forecast records product
 - Discontinue the "52nd ensemble member" IFS HRES. HRES was discontinued after becoming identical to the control forecast.
     - [https://www.ecmwf.int/en/about/media-centre/focus/2024/plans-high-resolution-forecast-hres-and-ensemble-forecast-ens](https://www.ecmwf.int/en/about/media-centre/focus/2024/plans-high-resolution-forecast-hres-and-ensemble-forecast-ens)
+- Upgrade computations to use river-route (Python) for matrix muskingum routing
 - Begin producing global reference as well as daily forecasted flood maps
-- <mark>Begin using river-route (python) instead of RAPID (user-compiled fortran) for matrix muskingum routing???</mark>
-- <mark>Implement non-linear routing???</mark>
-- <mark>1 hourly average forecast for flash flood warnings???</mark>
-- <mark>WMO, Google, FFGS....???</mark>
+- Volumes are computed using the original reduced gaussian grid/mesh rather than resampled to a uniform lat/lon grid
 
-## Available Products
+### Possible changes
 
-<mark>Dataset repository locations TBD</mark>
+- Implement non-linear routing
+- 1 hourly average forecast for flash flood warnings
+- Discontinue the forecast records product?????
 
-### Hydrography
+## List of Products
 
-| Property            | Value       |
-|---------------------|-------------|
-| Approximate Streams | 6.0 Million |
-| Reference Product   | TDX-Hydro   |
+### Model Sources
 
-### Flood Forecast Products
+1. Model Sources and Configuration Files by computational unit
+    1. hydrography (divided into computational units)
+        1. stream center lines (geoparquet)
+        2. catchment boundaries (geoparquet)
+        3. confluence points (geoparquet)
+        4. lake polygons (geoparquet)
+        5. simplified streams for mapping (geoparquet)
+    2. Routing configs for river-route
+        1. muskingum parameters (parquet)
+        2. connectivity (parquet)
 
-| Product Type       | Time Step        | Format  | Frequency | Description                                                 |
-|--------------------|------------------|---------|-----------|-------------------------------------------------------------|
-| Forecast Discharge | 3 hourly average | Zarr    | Daily     | Daily average forecasted discharge for 15 days              |
-| Map Summary Tables |                  | CSV     | Hourly    | Summary tables for web map styling, 1 per forecast timestep |
-| Flood Warnings     |                  | Parquet | Daily     | Warnings issued based on forecasted discharge               |
+### Forecasted Discharge
 
-Request parameters for ECMWF IFS data:
+1. Daily forecasts, 15-Day by 3-hourly average, and derivatives
+    1. Discharge zarr (YYYYMMDDHH.zarr) with the variables
+        1. Qens (member, time, river_id): 3 hourly discharge for each of the 50+1 IFS forecast members
+        2. ==Qmean (time, river_id): 3 hourly discharge ensemble mean==
+        3. ==Qmed (time, river_id): 3 hourly discharge ensemble median==
+        4. ==Qmin (time, river_id): 3 hourly discharge ensemble minimum==
+        5. ==Qmax (time, river_id): 3 hourly discharge ensemble maximum==
+    2. Forecast Warnings and Summaries 
+        1. Map styling tables used to produce animated maps
+        2. ==Datetimes when rivers exceed warning thresholds (parquet)==
+2. ==Monthly on 1st and 15th, 45-Day by 24-hourly average, and derivatives==
+    1. ==Discharge zarr (YYYYMMDDHH.zarr) with the variables==
+        1. ==Qens (member, time, river_id): daily average discharge for each of the 50+1 IFS forecast members==
+        2. ==Qmean (time, river_id): daily average discharge ensemble mean==
+        3. ==Qmed (time, river_id): daily average discharge ensemble median==
+        4. ==Qmin (time, river_id): daily average discharge ensemble minimum==
+        5. ==Qmax (time, river_id): daily average discharge ensemble maximum==
+
+### Web Maps
+
+1. Daily Forecasted Flood Maps
+    1. [https://www.arcgis.com/home/item.html?id=8f0573e0c0b9491dbeafde9c72ccf02b](https://www.arcgis.com/home/item.html?id=8f0573e0c0b9491dbeafde9c72ccf02b)
+2. ==Discharge max flood maps?==
+3. ==Return period flood maps?==
+
+### Retrospective Discharge
+
+1. Retrospective discharge simulation and derivatives
+    1. Hourly discharge (hourly.zarr) **<- native resolution**
+    2. Daily discharge (daily.zarr)
+    3. Monthly average discharge (monthly-timeseries.zarr)
+    4. Yearly average discharge (yearly-timeseries.zarr)
+    5. Annual maximums discharge (maximums.zarr)
+    6. Return periods discharge (return-periods.zarr)
+    7. Flow duration curves discharge (fdc.zarr)
+2. Final states for each forecast initialization date (parquet)
+
+### Flood Maps
+
+1. ==Daily Forecasted Flood Maps==
+    1. ==what is the structure and naming convention==
+2. ==Return Period Indexed Flood Maps==
+    1. ==what is the structure and naming convention==
+
+## Data Access
+
+### Summary
+
+RFS data is available in the following ways:
+
+1. [https://hydroviewer.geoglows.org](https://hydroviewer.geoglows.org)
+2. ==~~https://geoglows.ecmwf.int~~==
+3. AWS S3 buckets
+4. geoglows Python package
+5. ==riverforecastsystem JS==
+6. ==Lambda functions deployable to user provided account at AWS, GCP, Netlify, Vercel, etc.==
+
+| Product Type                | Category      | Format     | Update Frequency             | Updates Available   | Size      |
+|-----------------------------|---------------|------------|------------------------------|---------------------|-----------|
+| Hydrography (global)        | Model Sources | GeoParquet | None                         | N/A                 |           |
+| Hydrography (by VPU)        | Model Sources | GeoParquet | None                         | N/A                 |           |
+| Routing Configs (by VPU)    | Model Sources | Parquet    | None                         | N/A                 |           |
+| Forecast 3-hourly Discharge | Forecasts     | Zarr v3    | Daily @ 00:00 UTC            | 6am-12pm UTC        | 150GB     |
+| Map Summary Tables          | Forecasts     | CSV        | Daily @ 00:00 UTC            | 6am-12pm UTC        | 81x120 MB |
+| Flood Warnings              | Forecasts     | Parquet    | Daily @ 00:00 UTC            | 6am-12pm UTC        | 500 MB    |
+| Hourly Discharge            | Retrospective | Zarr v3    | Daily @ 00:00 UTC            | by 3am UTC same day | 10 TB     |
+| Daily Discharge             | Retrospective | Zarr v3    | Daily @ 00:00 UTC            | by 3am UTC same day | 500 GB    |
+| Monthly Average Discharge   | Retrospective | Zarr v3    | Monthly on 5th at 00:00 UTC  | by 3am UTC same day | ~20 GB    |
+| Yearly Average Discharge    | Retrospective | Zarr v3    | Yearly on Jan 5 at 00:00 UTC | by 3am UTC same day | ~2 GB     |
+| Annual Maximums Discharge   | Retrospective | Zarr v3    | Yearly on Jan 5 at 00:00 UTC | by 3am UTC same day | ~1 GB     |
+| Return Periods              | Retrospective | Zarr v3    | None                         | N/A                 |           |
+| Flow Duration Curves        | Retrospective | Zarr v3    | None                         | N/A                 |           |
+| Flood Extent Maps           | Flood Maps    | COG        | Daily @ 00:00 UTC            | 6am-12pm UTC        | <5GB      |
+| Return period flood maps    | Flood Maps    | COG        | None                         | N/A                 | <10GB     |
+
+### Zarr Details
+
+**Coordinate variables**
+
+- **river_id**
+    - Integers
+    - The order of the river_id list is the same in all Zarrs. To get this list, check any zarr or refer to the hydrography datasets
+    - Fill value: n/a
+- **time**
+    - Integer type
+    - Left aligned time windows. That is, the corresponding value applies from this time step, t, to the next time step, t+1.
+    - Uses a unit string of style "<interval> since <reference time>" e.g. hours since 1940-01-01 00:00:00
+    - Fill value: n/a
+- **returnperiod**
+    - [1.5, 2, 5, 10, 25, 50, 75, 100]
+
+**Discharge Variables**
+
+- **Q**, **Qens**, **Qmean**, **Qmed**, **Qmin**, **Qmax**
+    - Float numbers with 3 decimals stored as integers (multiplied by 1000)
+    - Q values are "left-aligned" on their time intervals. That is, Q is the average over the **_following_** 1 hour, 3 hours, 24 hours, 1 calendar month, or 1 calendar year
+    - Units: cubic meters per second (m3/s)
+    - Fill value: missing values are not allowed.
+
+**Return Periods**
+
+- **max_simulated**
+- **logpearson3**
+- **lognormal**
+- **gumbel**
+- **weibull**
+
+### Organization on S3
+
+```markdown
+s3://river-forecast-system/
+
+- v3/
+    - hydrography/
+        - vpu
+        - global
+        - attribute-tables/
+    - routing-configs/
+    - map-tiles/
+    - retrospective/
+        - hourly.zarr
+        - daily.zarr
+        - monthly-timeseries.zarr
+        - monthly-timesteps.zarr
+        - yearly-timeseries.zarr
+        - yearly-timesteps.zarr
+        - maximums.zarr
+        - return-periods.zarr
+        - fdc.zarr
+        - final-states/
+            - vpu=*
+                - YYYYMMDDHHMMSS.parquet
+    - flood-maps/
+        - 2years.tiff
+    - forecasts/
+        - forecast-records/
+            - records_YYYY.zarr
+        - daily-forecasts/
+            - YYYYMMDD/
+                - discharge.zarr
+                - warnings.parquet
+                - map_tables/
+                    - YYYYMMDDHH.csv
+                - flood-maps
+                    - option 1: flood_extents.tiff
+                    - option 2: directory called flood-extents/
+                        - 1 tiff per map tile
+```
+
+## Input Datasets
+
+### ECMWF IFS ENFO
+
+Request parameters:
 
 - Stream: enfo
 - Types:
@@ -94,7 +217,7 @@ Request parameters for ECMWF IFS data:
     - https://codes.ecmwf.int/grib/param-db/
     - Runoff: 205.128
 - Grid:
-    - Grid should be the native resolution of reduced gaussian grid/mesh. It should not be regridded or resampled.
+    - Grid in the native resolution of reduced gaussian grid/mesh. No regridding or resampling.
 
 Example MARS request
 
@@ -113,143 +236,41 @@ type=pf,
 target="output"
 ```
 
-### Retrospective Simulation Products
+### ECMWF IFS EEFO
 
-| Product Type                 | Time Step       | Format | Frequency | Description                                                                          |
-|------------------------------|-----------------|--------|-----------|--------------------------------------------------------------------------------------|
-| Hourly Discharge             | hourly average  | Zarr   | Daily     | Hourly average retrospective simulation                                              |
-| Daily Discharge              | daily average   | Zarr   | Daily     | Daily average retrospective simulation                                               |
-| Monthly Timeseries Discharge | monthly average | Zarr   | Monthly   | Monthly average retrospective simulation, timeseries chunks                          |
-| Monthly Timesteps Discharge  | monthly average | Zarr   | Monthly   | Monthly average retrospective simulation, timestep chunks                            |
-| Yearly Timeseries Discharge  | yearly average  | Zarr   | Yearly    | Yearly average retrospective simulation, timeseries chunks                           |
-| Yearly Timesteps Discharge   | yearly average  | Zarr   | Yearly    | Yearly average retrospective simulation, timestep chunks                             |
-| Maximums Discharge           | annual maximum  | Zarr   | Yearly    | Annual maximums of retrospective simulation from the hourly and daily average series |
-| Return Periods               |                 | Zarr   | Once      | Return periods of retrospective simulation                                           |
-| Flow Duration Curves         |                 | Zarr   | Once      | Flow duration curves of retrospective simulation                                     |
+Request parameters:
 
-### Flood Maps
+- Stream: eefo
+- Types:
+    - pf, perturbed forecast, 100 members
+    - cf, control forecast, 1 member
+- Variables:
+    - https://codes.ecmwf.int/grib/param-db/
+    - Runoff: 205.128
+- Grid:
+    - Grid in the native resolution of reduced gaussian grid/mesh. No regridding or resampling.
 
-| Product Type | Time Step | Format | Frequency               | Description                                                      |
-|--------------|-----------|--------|-------------------------|------------------------------------------------------------------|
-| Flood Maps   |           | COG    | Daily w/ Flood Forecast | Flood maps for the forecasted discharge, 1 per forecast timestep |
+Example MARS request
 
-## Changelog
-
-## Implementation Details
-
-### Project Organization
-
-This suite expects a machine with a certain directory structure
-
-home, with subdirectories for IFS, ERA5, forecasts which has subdirectories for each YMD, and retrospective
-
-draw an ascii diagram of the directory structure
-
-```
-/$HOME
-    /ifs
-        yyyymmdd.grib
-    /era5
-        yyyymmdd.nc
-    /forecasts
-        /YYYYMMDD
-            /vpus
-                /vpu=101
-                    /volumes
-                        volumes_$vpu_$ens.nc  # 1 per ensemble member
-                    /discharge
-                        discharge_$vpu_$ens.nc  # 1 per ensemble member
-                    nces_avg_$vpu.nc  # 1 per VPU, ensemble average
-                    map_tables/
-                        YYYYMMDDHH.parquet  # 1 per timestep of the forecast
-            # Final products
-            discharge.zarr
-            warnings.parquet
-            map_tables/
-                YYYYMMDDHH.csv  # 1 for each timestep of the forecast
-        # For example
-        /20250101
-        /20250102
-        /20250103
-        /20250104
-        /20250105
-    /retrospective
-        hourly.zarr
-        daily.zarr
-        monthly-timeseries.zarr
-        monthly-timesteps.zarr
-        yearly-timeseries.zarr
-        yearly-timesteps.zarr
-        maximums.zarr
-        return-periods.zarr
-        /final_states
-            final_states.parquet
+```text
+retrieve,
+class=od,
+date=2025-07-15,
+expver=1,
+levtype=sfc,
+number=1/to/100,
+param=205.128,
+step=0/to/1104/by/24,
+stream=eefo,
+time=00:00:00,
+type=pf,
+target="output"
 ```
 
-## Log/Status Feeds
+### ERA5
 
-In addition to writing logging message to disc, status information is sent to the following locations:
+[//]: # (todo)
 
-- Teams channel webhook
-- AWS CloudWatch logs
+### HydroSHEDS v2
 
-## Summary of computational steps
-
-Each day, the following steps are performed in order:
-
-### Phase 0: Preparation
-
-1. Set environment variables
-    1. YMD - The date of the day to be processed, usually today. In YYYYMMDD format.
-
-### Phase 1: Download runoff data
-
-Runoff data are cached. Check if the data are available, otherwise download them.
-
-1. Download the latest ECMWF IFS runoff grid/mesh data for the date specified by YMD.
-2. Download the latest ERA5 runoff grid/mesh data for the date specified by YMD.
-
-### Phase 1: Daily forecast computations
-
-1. Download the latest ECMWF IFS runoff grid/mesh data.
-2. VPU level computations. Parallelize these jobs by VPU, but do not change the task order.
-    1. Calculate catchment level volumes (python/calculate_catchment_volumes.py
-    2. Route the volumes (python/route.py)
-    3. Concatenate ensemble members into a single file (bash/concat_member_discharges.sh)
-    4. Generate a table of summarized flows used to style the web map layer (python/generate_vpu_map_tables.py)
-    5. Issue warnings by filtering the map summary tables (TODO)
-3. Concatenate the VPU level results. Tasks may be computed in any order and/or simultaneously.
-    1. Concatenate the VPU level routed discharge. Makes a Zarr dataset. (python/concatenate_vpu_discharge.py)
-    2. Concatenate the VPU level map tables. Makes a directory of CSVs. (python/concatenate_vpu_map_tables.py)
-    3. Concatenate the VPU level warnings (TODO)
-
-### Phase 2: Update retrospective simulation
-
-1. Download the latest day's ERA5 Runoff data
-2. Calculate catchment level volumes
-3. Route the volumes, initialized from the last time step of the retrospective simulation.
-4. Resample the hourly discharge to daily average and, when necessary, monthly and yearly averages.
-
-### Phase 3: Synchronize forecast initialization to retrospective simulation
-
-1. Get the initialization from the last retrospective simulation updates
-2. Get the first 24 hours of forecasted catchment volumes for the 5 days between the last retrospective timestep and the present date.
-3. Reroute the forecasted volumes, but initialize at the last retrospective timestep.
-4. Calculate the ensemble average of the rerouted forecasted volumes
-
-### Phase 5: Export results to S3 archives
-
-1. From the daily forecast computations
-    1. Routed discharge - Zarr
-    2. Map summary tables - CSV
-    3. Warnings - Parquet
-2. From the retrospective simulation update
-    1. Final states - Parquet
-    2. Routed discharge in hourly, daily, monthly, yearly averages - Zarr
-3. From the rerouted forecasted volumes
-    1. Rerouted forecasted discharge, 5 days only - Zarr
-
-### Phase 6: Cleanup
-
-1. Delete forecast directories dated __older than 5 days__
-2. Delete runoff data dated __older than 5 days__
+[//]: # (todo)

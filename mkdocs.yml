@@ -1,7 +1,18 @@
 site_name: River Forecast System Version Specifications
 theme:
   name: material
+  palette:
+    primary: blue
+markdown_extensions:
+  - pymdownx.critic
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
+extra_css:
+  - stylesheets/extra.css
 nav:
+  - Home: index.md
   - RFS v3: specs/rfs-v3.md
   - RFS v2: specs/rfs-v2.md
   - RFS v1: specs/rfs-v1.md
