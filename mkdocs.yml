@@ -2,6 +2,8 @@ site_name: River Forecast System Version Specifications
 theme:
   name: material
 nav:
+  - Home: index.md
   - RFS v3: specs/rfs-v3.md
   - RFS v2: specs/rfs-v2.md
   - RFS v1: specs/rfs-v1.md
+s5cmd --profile geocomp sync --exclude "*/DEM/*" --exclude "*/DEM_Updated/*" --exclude "*/FlowDirection/*" --exclude "*/Bathymetry/*" "s3://floodmap-sandbox/fldpln/*" ./

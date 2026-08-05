@@ -1,0 +1,9 @@
+[project]
+name = "rfs-specification-documents"
+version = "0.1.0"
+description = "River Forecast System version specification documents"
+requires-python = ">=3.11"
+dependencies = [
+    "mkdocs",
+    "mkdocs-material",
+]
