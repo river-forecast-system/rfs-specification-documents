@@ -6,7 +6,7 @@ Documentation for the River Forecast System version 3, RFS v3.
 
 - Model Version: 3.0
 - Launch Date: <mark>1 March 2027</mark>
-- End Date: 
+- End Date:
 
 | Property                       | Value                                    |
 |--------------------------------|------------------------------------------|
@@ -64,25 +64,29 @@ These account for most of the mechanical work in porting v2 code.
 - **`riverId` order is now a formal promise.** The axis is topologically sorted and identical across every product. It is not ascending id order, so an id cannot be located by binary search on the
   published array. The new `riverIndex` attribute on the streams gives a river's position directly, which avoids a lookup when downloading
 - **Flow duration curves are `float32` and bitrounded** like every other discharge array. v2 stored them as `float64`
-- Streams carry additional attributes, and some renamed ones, which make the data more self documenting and convenient to use
+- Streams carry additional attributes, and some renamed ones, which make the data more self documenting and convenient to use. Hydrography geometry is now EPSG:3857, not EPSG:4326,
+  see [Geometry storage](#geometry-storage)
 
 ### Where the data live
 
 - All v3 data are under a single bucket, `s3://river-forecast-system/v3/`, alongside migrated v1 and v2 backups.
 - Within each product, subdivisions use hive partition style names
-  - Hydrography is organized in 3 digit computational group numbers `group=XXX`
-  - Forecasts are organized by a sequence of year, month, day dividers: `year=YYYY/month=MM/day=DD`
-  - Flood maps are organized by 1x1 degree tiles labeled by latitude and longitude: `lat=YYY/lon=XXX`
+    - Hydrography is organized in 3 digit computational group numbers `group=XXX`
+    - Forecasts are organized by a sequence of year, month, day dividers: `year=YYYY/month=MM/day=DD`
+    - Flood maps are organized by 1x1 degree tiles labeled by latitude and longitude: `lat=YYY/lon=XXX`
 - Monthly and yearly averages are available in timeseries and timestep chunked forms in a single zarr
 - The retrospective simulation is updated daily and is typically available by 01:00 UTC
 - Forecast warnings are published as `alerts.csv`, formatted for CAP alerts, instead of a warnings parquet file
 - Forecast flood extents are published as a single vector `fim.geo.parquet` rather than a raster set
 - Reference flood maps are stored by tile as rasters
-- Global mapping hydrography is published as PMTiles for web clients and a file geodatabase for Esri clients
+- Global mapping hydrography is published as PMTiles: streams, catchments (with a basin hierarchy for low zooms), and group outlines. <mark>A file geodatabase for Esri clients is TBD</mark>
 
 ### New in v3
 
-- Confluences and lakes, published per computational unit as new hydrography products
+- Confluences, catchments, and group outlines published per computational unit, a global attribute table (`metadata.parquet`, `metadata.zarr`) and a Pfafstetter-like basin hierarchy in `group=0`
+- `riverIndex` and `upstreamCount` on every reach: the reaches upstream of any reach are the contiguous row range `[riverIndex - upstreamCount, riverIndex]` in every table and every Zarr
+- Lakes and reservoirs are handled in the network itself: interior reaches are removed, inlets point at the outlet, and the outlet reach carries a traced line through the lake. There is no separate
+  lakes layer
 - The 1.5 year recurrence interval and a derived `annual_exceedance_probability` array on the return periods
 
 ### Discontinued in v3
@@ -97,8 +101,9 @@ These account for most of the mechanical work in porting v2 code.
 These change the values themselves rather than how they are read, so a difference between v2 and v3 at a given river is expected.
 
 - Forecasts and retrospective simulations are tightly coupled using shared initializations
-- Reduction in total stream count from about 6.8 million to about 5.5 million, for computational efficiency and accuracy, better treatment of lakes and reservoirs, and reduction in total storage
-  burden. Streams in the middle of deserts, within lakes, in oceans, and in other inappropriate areas were removed from the v2 hydrography
+- Reduction in total stream count from about 6.8 million to about 5.45 million, for computational efficiency and accuracy, better treatment of lakes and reservoirs, and reduction in total storage
+  burden. Streams in the middle of deserts, within lakes, in oceans, on small islands, in terminal watersheds under 250 km2, and reaches shorter than 2 km were removed or merged, see
+  [Network simplification](#network-simplification)
 - Upgrading to use the newest IFS version, 50r1
 - Runoff volumes are aggregated to catchment scale on the native octahedral, or reduced gaussian, mesh native to the IFS version instead of being resampled to a uniform lat/lon grid
 - Upgrade computations to use river-route (Python) instead of RAPID (user compiled Fortran) for matrix muskingum routing, with synthetic reach subdivision for greater computational stability
@@ -125,16 +130,22 @@ s3://river-forecast-system/
 └── v3/
     ├── hydrography/
     │   ├── group=0/                                # the 0 group is the global catch-all so we don't make near-duplicate names
-    │   │   ├── streams.pmtiles                     # for mapbox-gl-js, leaflet, etc
-    │   │   └── streams_map_optimized.gdb.zip       # for esri map layers
-    │   └── group=XXX/
-    │       ├── catchments_XXX.geo.parquet          # TDX-Hydro derived
-    │       ├── confluences_XXX.geo.parquet         # TDX-Hydro derived
-    │       ├── lakes_XXX.geo.parquet               # TDX-Hydro derived
-    │       ├── streams_XXX.geo.parquet             # TDX-Hydro derived - epsg4326, modified copy of tdx-hydro region
-    │       ├── streams_simplified_XXX.geo.parquet  # TDX-Hydro derived - epsg4326, extreme lat/lon coordinate simplification
-    │       ├── streams_mapping_XXX.geo.parquet     # TDX-Hydro derived - epsg3857, coordinates rounded to 0 decimal places
-    │       ├── params_XXX.parquet                  # for river-route
+    │   │   ├── metadata.parquet                    # every reach's attributes, all groups concatenated, groupId retained
+    │   │   ├── metadata.zarr/                      # the network walking columns as chunked arrays, for browser clients
+    │   │   ├── groups.geo.parquet                  # one exact outline per group
+    │   │   ├── basins_level{2..8}.geo.parquet      # Pfafstetter-like basin hierarchy, one file per level
+    │   │   ├── streams.pmtiles                     # z0-11, for mapbox-gl-js, maplibre, leaflet, etc
+    │   │   ├── catchments.pmtiles                  # z0-10, basins at low zooms, leaf catchments at z10
+    │   │   ├── groups.pmtiles                      # z0-12, group outlines
+    │   │   ├── riverNames.json                    # hand curated names of major rivers as riverIndex ranges, updated as edits accumulate
+    │   │   └── streams_map_optimized.gdb.zip       # for esri map layers - not produced by the hydrography pipeline, TBD
+    │   └── group=XXX/                              # all geometry epsg3857 snapped to a 1 m grid, geoarrow geoparquet 1.1
+    │       ├── streams_XXX.geo.parquet             # TDX-Hydro derived - the only streams product, full attribute table
+    │       ├── metadata_XXX.parquet                # the streams' attribute table without geometry, plus outlet lat/lon
+    │       ├── catchments_XXX.geo.parquet          # TDX-Hydro derived - one polygon per reach
+    │       ├── confluences_XXX.geo.parquet         # TDX-Hydro derived - junction points
+    │       ├── boundary_XXX.geo.parquet            # the group's outline
+    │       ├── params_XXX.parquet                  # for river-route - TBD, musk_k/musk_x/velocity_factor are already in the metadata
     │       └── synthetic_rating_curve.parquet      # from ARC, for routing, FIM? Q_baseflow depends on a modeled value!
     ├── retrospective/
     │   ├── hourly.zarr/
@@ -193,29 +204,311 @@ s3://river-forecast-system/
 
 ### Hydrography
 
-| Property            | Value       |
-|---------------------|-------------|
-| Approximate Streams | 5.5 Million |
-| Reference Product   | TDX-Hydro   |
+| Property             | Value                                                                              |
+|----------------------|------------------------------------------------------------------------------------|
+| Streams (reaches)    | ~5.45 million (5,452,029 in the current build)                                     |
+| Computational groups | 127                                                                                |
+| Source regions       | 46 TDX-Hydro regions (HydroBASINS level 2 ids, e.g. `1020000010`)                  |
+| Reference product    | TDX-Hydro                                                                          |
+| Preparation code     | `tdxhydro-postprocessing`, see [Hydrography preparation](#hydrography-preparation) |
 
 Hydrography and the routing configs derived from it are divided by computational unit. A computational unit is called a **group** and is written into the bucket as a `group=XXX` hive partition. The
 `group=0` partition is a global catch-all, used so that global products do not need near duplicate names of their own.
 
-| File                              | Partition   | Format     | Description                                                                     |
-|-----------------------------------|-------------|------------|---------------------------------------------------------------------------------|
-| `streams.pmtiles`                 | `group=0`   | PMTiles    | Global stream tiles for mapbox-gl-js, leaflet, and similar clients              |
-| `streams_map_optimized.gdb.zip`   | `group=0`   | File GDB   | Global streams for Esri map layers                                              |
-| `streams_XXX.geo.parquet`         | `group=XXX` | GeoParquet | Stream center lines, epsg4326, a modified copy of the TDX-Hydro region          |
-| `streams_mapping_XXX.geo.parquet` | `group=XXX` | GeoParquet | Streams in epsg3857 with coordinates rounded to 0 decimal places                |
-| `catchments_XXX.geo.parquet`      | `group=XXX` | GeoParquet | Drainage area of each stream, TDX-Hydro derived                                 |
-| `confluences_XXX.geo.parquet`     | `group=XXX` | GeoParquet | Junctions of the stream network, TDX-Hydro derived                              |
-| `lakes_XXX.geo.parquet`           | `group=XXX` | GeoParquet | Lakes and reservoirs, TDX-Hydro derived                                         |
-| `params_XXX.parquet`              | `group=XXX` | Parquet    | Routing parameters for river-route                                              |
-| `synthetic_rating_curve.parquet`  | `group=XXX` | Parquet    | Synthetic rating curves from ARC, used for routing and flood inundation mapping |
+A group is a set of whole terminal watersheds: `groupId` is assigned by `outletRiverId` from a version controlled lookup table, so no reach ever drains across a group boundary and a group's files are
+self contained. Every group lies inside exactly one TDX-Hydro region, and every group is one contiguous run of the global `riverIndex`. There is no group index file: `groupId` is a property of the
+reach (and rides in the vector tiles), `riverIndex` and `upstreamCount` give position and extent, and `groups.geo.parquet` gives each group's outline and therefore its bounding box.
+
+Global products, in `group=0`:
+
+| File                             | Format     | Description                                                                                                   |
+|----------------------------------|------------|---------------------------------------------------------------------------------------------------------------|
+| `metadata.parquet`               | Parquet    | Every reach's attribute table, all groups concatenated in `riverIndex` order, `groupId` retained              |
+| `metadata.zarr/`                 | Zarr v3    | The network walking columns of `metadata.parquet` as chunked arrays, for browser clients                      |
+| `groups.geo.parquet`             | GeoParquet | One exact outline per group, dissolved from that group's catchments, one row group per row                    |
+| `basins_level{2..8}.geo.parquet` | GeoParquet | Pfafstetter-like basin hierarchy, one file per level, each basin addressed by the reach it drains through     |
+| `streams.pmtiles`                | PMTiles    | Global stream tiles, z0-11, for mapbox-gl-js, maplibre, leaflet, and similar clients                          |
+| `catchments.pmtiles`             | PMTiles    | Global catchment tiles, z0-10, the basin hierarchy at low zooms and the leaf catchments at z10                |
+| `groups.pmtiles`                 | PMTiles    | Group outline tiles, z0-12                                                                                    |
+| `riverNames.json`                | JSON       | Hand curated names of major rivers, each a contiguous `riverIndex` range, with the colors a map draws them in |
+
+Per group products, in `group=XXX`:
+
+| File                             | Format     | Description                                                                                               |
+|----------------------------------|------------|-----------------------------------------------------------------------------------------------------------|
+| `streams_XXX.geo.parquet`        | GeoParquet | Stream center lines with the full attribute table, a modified copy of the TDX-Hydro region                |
+| `metadata_XXX.parquet`           | Parquet    | The same rows and columns as `streams_XXX` without the geometry, for walking the network without geometry |
+| `catchments_XXX.geo.parquet`     | GeoParquet | Drainage area of each reach, one polygon per reach, TDX-Hydro derived                                     |
+| `confluences_XXX.geo.parquet`    | GeoParquet | Junctions of the stream network, TDX-Hydro derived                                                        |
+| `boundary_XXX.geo.parquet`       | GeoParquet | The group's outline, the same geometry as its row in `groups.geo.parquet`                                 |
+| `params_XXX.parquet`             | Parquet    | Routing parameters for river-route                                                                        |
+| `synthetic_rating_curve.parquet` | Parquet    | Synthetic rating curves from ARC, used for routing and flood inundation mapping                           |
+
+<mark>`params_XXX.parquet` and `synthetic_rating_curve.parquet` are not written by the hydrography pipeline. The Muskingum parameters river-route needs (`musk_k`, `musk_x`, `velocity_factor`) and the
+connectivity (`riverId`, `nextRiverId`) are already columns of `metadata_XXX.parquet`, so confirm whether `params_XXX.parquet` is a separate file or a projection of the metadata.</mark>
 
 <mark>`Q_baseflow` in the synthetic rating curves depends on a modeled value.</mark>
 
-<mark>Connectivity is not a separate file in this layout. Confirm whether it is carried inside `params_XXX.parquet` or still needs its own file.</mark>
+<mark>A file geodatabase for Esri clients (`streams_map_optimized.gdb.zip`) is not produced by the hydrography pipeline. Decide whether it is built from `streams_XXX` downstream or dropped.</mark>
+
+There is deliberately **no global streams or catchments table** and **no lakes product**:
+
+- Per reach geometry is published per group only. A world sized copy of it is a bulk download of what `group=XXX/` already serves, and a client that wants geometry wants one group of it. The global
+  attribute table is `metadata.parquet`.
+- Lakes and reservoirs are not a separate layer. Reaches inside a lake are removed from the network, the lake's inlets are pointed at its outlet, and the outlet reach's geometry becomes a traced line
+  through the lake from each significant inlet, see [Lakes and reservoirs](#lakes-and-reservoirs). The lake table that drives this is an input to the pipeline, not a product.
+- There is no separate connectivity table. `riverId`/`nextRiverId` are columns of `metadata_XXX.parquet`, and parquet is columnar, so a consumer that wants only those two pays for those two column
+  chunks. A dedicated file was measured to be no smaller.
+
+#### Row order, `riverIndex`, and `upstreamCount`
+
+Every hydrography table is in one global row order, and that order is the `riverId` axis of every Zarr store. `riverIndex` is a reach's row position in that order; `upstreamCount` is the number of
+reaches strictly upstream of it. The order is nested three levels deep:
+
+1. **Groups, ascending `groupId`.** No reach drains across a group, so whole groups can be ordered freely, and doing so gives every group one contiguous `riverIndex` range. A group's own files are
+   indexed by `riverIndex` minus the group's first `riverIndex`.
+2. **Terminal watersheds within a group, along a Hilbert curve through their outlet points** (16 bit index on the outlet lon/lat). Watersheds are disjoint, so neighbouring basins land next to each
+   other in the file, which is what keeps the geometry compressible and the tiles coherent.
+3. **Reaches within a watershed, depth first post-order from the outlet, descending the largest subtree first.** Post-order emits a reach after everything upstream of it, so this is still a valid
+   topological sort, and a subtree occupies a contiguous interval that ends at its root.
+
+Three promises follow, and each is asserted by the build rather than assumed:
+
+- **Upstream before downstream.** Every reach is ordered after every reach that drains into it.
+- **Every upstream subset is one contiguous row range**, exactly `[riverIndex - upstreamCount, riverIndex]`. An upstream query is a range filter, on any table or any Zarr.
+- **Every group is one contiguous row range**, so a group's rows are a slice of the global tables.
+
+Because it is a topological order and not ascending id order, an id cannot be found by binary search on the published `riverId` array. Read `riverIndex` off the streams or metadata instead. Descending
+the largest subtree first puts a reach a mean of 3.5 rows from the reach it drains into (96.5% within one 64 byte cache line), which both the compressor and the Muskingum routing kernel exploit.
+
+`riverIndex` is positional and **not stable across rebuilds**. `riverId` is the only stable identifier; it is the TDX-Hydro `LINKNO` plus a per region offset that makes it globally unique.
+
+#### Attribute schema
+
+`metadata_XXX.parquet` and `streams_XXX.geo.parquet` carry the same rows in the same order; the streams add `geometry` and omit `lat`/`lon`. `group=0/metadata.parquet` is every group's metadata
+concatenated with `groupId` retained. Column order puts the network walking columns first so a projected read of them is one contiguous run of column chunks.
+
+| Column            | Type     | Description                                                                                                                      |
+|-------------------|----------|----------------------------------------------------------------------------------------------------------------------------------|
+| `riverId`         | int32    | Unique reach id, the TDX-Hydro `LINKNO` offset per region. The only stable identifier                                            |
+| `nextRiverId`     | int32    | Downstream reach id, -1 at an outlet                                                                                             |
+| `outletRiverId`   | int32    | The terminal outlet reach of this reach's watershed                                                                              |
+| `riverIndex`      | int32    | Row position in the global order, see above. Positional, not stable across rebuilds                                              |
+| `upstreamCount`   | int32    | Reaches strictly upstream; they are rows `[riverIndex - upstreamCount, riverIndex]`                                              |
+| `strahlerOrder`   | int32    | Strahler stream order, from TDX-Hydro `strmOrder`, taking the max when reaches were merged                                       |
+| `shreveOrder`     | int32    | Shreve magnitude, the upstream headwater count recomputed on the simplified network. **Not** a reach count                       |
+| `USContArea`      | float64  | Contributing area at the reach's upstream end, m2, from TDX-Hydro                                                                |
+| `DSContArea`      | float64  | Contributing area at the reach's downstream end, m2, from TDX-Hydro                                                              |
+| `areaM2`          | float64  | The reach's own catchment area, m2, `DSContArea - USContArea` summed over every source reach merged into it                      |
+| `Length`          | float64  | Reach length, m, the TDX-Hydro TauDEM length summed over merged reaches                                                          |
+| `TDXHydroRegion`  | string   | Source TDX-Hydro region id                                                                                                       |
+| `groupId`         | int32    | Computational group. **`group=0/metadata.parquet` only**, dropped from the per group files because the partition name carries it |
+| `musk_k`          | int64    | Muskingum K, seconds, `geodesic length / velocity_factor` rounded to an integer                                                  |
+| `musk_x`          | float64  | Muskingum X, constant 0.20                                                                                                       |
+| `velocity_factor` | float64  | Reference velocity, m/s, `exp(0.10 ln(DSContArea) - 4.68) + 0.1`                                                                 |
+| `lat`, `lon`      | float64  | Outlet point of the reach in degrees, EPSG:4326. **Metadata only**                                                               |
+| `geometry`        | geoarrow | The reach line, MultiLineString, EPSG:3857. **Streams only**                                                                     |
+
+Ids, indices, orders, and `groupId` are int32 on purpose. A parquet int64 column decodes to `BigInt` in a browser, which neither compares nor hashes equal to `Number`, so a client keying a `Map` on
+ids silently matches nothing. int32 decodes to `Number`, and it is what every Zarr uses for `riverId`, so the two agree. The build range checks rather than assumes; an id scheme that outgrows int32
+fails the build instead of wrapping.
+
+<mark>`musk_k` is currently written as int64 (the one integer column not covered by the int32 enforcement). Values are seconds and comfortably fit int32; consider downcasting it for the same
+`BigInt` reason.</mark>
+
+<mark>The geodesic reach length is computed in the pipeline and used for `musk_k`, but the published `Length` column is the TDX-Hydro planar length. Decide whether to publish the geodesic length too,
+or instead.</mark>
+
+`group=0/metadata.zarr` holds the network walking subset of the same table as chunked arrays: `riverId`, `riverIndex`, `upstreamCount`, `nextRiverId`, `outletRiverId` as int32 and `lat`, `lon` as
+float32, each `(riverId,)` in the global order, chunks of 10,000, blosc zstd level 5 with shuffle, Zarr v3, not consolidated. It exists so a browser client can pull one range of the network without a
+parquet reader.
+
+#### Confluences
+
+`confluences_XXX.geo.parquet`, one row per reach that has at least one reach draining into it, in the same `riverIndex` order as the reaches, default row groups.
+
+| Column         | Type     | Description                                                           |
+|----------------|----------|-----------------------------------------------------------------------|
+| `riverId`      | int32    | The reach that begins at this junction, i.e. the downstream reach     |
+| `upstream_ids` | string   | Comma separated `riverId`s of the reaches meeting here                |
+| `geometry`     | geoarrow | Point, EPSG:3857, the outlet point of the first listed upstream reach |
+
+#### Catchments
+
+`catchments_XXX.geo.parquet`, one polygon per reach, in the same order as the reaches, so one selector addresses both.
+
+| Column       | Type     | Description                                                                                                  |
+|--------------|----------|--------------------------------------------------------------------------------------------------------------|
+| `riverId`    | int32    | The reach this catchment drains to                                                                           |
+| `riverIndex` | int32    | The reach's row position, identical to the streams                                                           |
+| `geometry`   | geoarrow | MultiPolygon, EPSG:3857, the TDX-Hydro source basins of every reach merged into this one, dissolved together |
+
+The catchments are the TDX-Hydro `streamreach_basins` polygons dissolved along exactly the edits made to the stream network, so a catchment covers the drainage of everything that was merged into its
+reach and the catchment coverage conserves area. They are then coverage simplified at 20 m with the outer boundary pinned. That is not a rendering decision: it is a few times the 3.4 m cell of the 1/9
+arcsec DEM the basins were polygonised from, so it removes the raster staircase and little else, and it stays sub pixel until z13, two zooms past the deepest the tiles carry. Nothing zoom dependent is
+decided in the published catchments; the tile bands are cut separately.
+
+#### Group outlines
+
+`boundary_XXX.geo.parquet` is a single MultiPolygon, the union of every catchment in the group, with interior holes closed except where another group stands in them. `group=0/groups.geo.parquet`
+is the same 127 outlines stacked with a `groupId` column, written with **one row group per row** so a client wanting one outline fetches one row group rather than the world. The outlines are exact
+rather than simplified: adjacent groups share edges instead of overlapping, and the build logs any overlapping pair.
+
+#### Basin hierarchy
+
+`group=0/basins_level{L}.geo.parquet` for `L` in 2..8 is a nested set of drainage basins coarser than the catchments, used to draw the catchment map at low zooms where 5.45 million leaf polygons
+cannot be rendered. Level 2 is a region's whole footprint; each level below splits its parent with a Pfafstetter-like rule (within a watershed, the largest tributaries take the even digits and the
+interbasins between them the odd ones; along a coast, whole terminal watersheds are grouped) with a budget of about 4x more basins per level, which is the growth a tile pyramid wants. The basin codes
+are assigned once on the raw TDX-Hydro network and frozen alongside it, so they do not change between releases; each release stamps them with its own reach ids.
+
+| Column           | Type     | Description                                                                                                                |
+|------------------|----------|----------------------------------------------------------------------------------------------------------------------------|
+| `riverId`        | int32    | The reach this basin drains through, so a basin is addressed exactly like a reach, and selectors written for streams apply |
+| `riverIndex`     | int32    | That reach's row position                                                                                                  |
+| `TDXHydroRegion` | string   | Source region                                                                                                              |
+| `basinId`        | int32    | Sequential id of the basin **within its level and region**, not globally unique                                            |
+| `level`          | int32    | Which level this file is                                                                                                   |
+| `pfafCode`       | string   | The basin's code, `level - 2` digits, empty at level 2. A code is a prefix of the codes of the basins nested inside it     |
+| `riverCount`     | int64    | Source reaches in the basin                                                                                                |
+| `areaM2`         | float64  | Their total area                                                                                                           |
+| `strahlerOrder`  | int32    | The largest order in the basin                                                                                             |
+| `geometry`       | geoarrow | MultiPolygon, EPSG:3857, dissolved from the source basins and cut to the tolerance of the zoom band that draws this level  |
+
+The outlet sets are strictly nested: the reach a level 4 basin drains through also names a level 5 basin, and so on down to the leaf catchment, so a selection survives zooming. `riverId` is unique
+within a level, not across levels; code that merges across levels keys on `(level, riverId)`. The basins carry the raw network's codes, so a basin whose pour reach was merged away by the network
+simplification is named after the surviving reach that absorbed it, and a basin with no surviving reach at all is not published.
+
+<mark>`pfafCode` and `basinId` are unique within a region and level, not globally. Prefixing the region's own digits was designed but is not implemented.</mark>
+
+#### River names
+
+`group=0/riverNames.json` names the major rivers. It is the one **hand curated** product in the hydrography: TDX-Hydro carries no river names, so every entry is an editorial act — a person deciding
+that a particular reach is the mouth of a river that people call something. The editable source is `network_data/river_names.csv` in the hydrography pipeline, one row per name; the published JSON is
+what `scripts/extras_river_name_ranges.py` compiles that CSV into against one specific network build. The CSV is the source of truth and that script primarily restructures it: everything descriptive
+is read from the CSV and republished verbatim, and only the `riverIndex` spans and the colors are worked out from the network. `scripts/extras_river_name_enrich.py` is what computes the derived
+columns into the CSV in the first place — it fills blank cells and never overwrites a filled one, so a hand correction survives every rerun.
+
+A name is stored as a **range**, not as a per reach column. The rule the table encodes is that a name covers everything upstream of the reach it is attached to, and a name attached further up
+overwrites it there — so the name on a reach is the one from the smallest named span containing it, and it reads as "the name of the segment you are on, or you are on an unnamed tributary of it".
+Everything upstream of a reach is one contiguous `riverIndex` interval, exactly `[riverIndex - upstreamCount, riverIndex]`, so the whole global assignment flattens to a sorted list of disjoint
+intervals on a single axis. That is ~105 kB for the current 477 names against a multi-million row string column, and it is why the file can be fetched by a browser rather than joined server side.
+Named spans are required to nest or miss entirely — a partial overlap would make the winner depend on row order — and the build refuses to emit a table that has one.
+
+| Field                      | Type     | Description                                                                                                                               |
+|----------------------------|----------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `rivers[]`                 | array    | One entry per name, the searchable table                                                                                                  |
+| `.name`                    | string   | The river's name as published                                                                                                             |
+| `.riverId`                 | int32    | The reach the name is attached to, i.e. the mouth of the named segment                                                                    |
+| `.outletRiverId`           | int32    | The terminal outlet of the watershed the name sits in                                                                                     |
+| `.watershed`               | string   | The name of that terminal watershed, so a tributary carries the river system it belongs to                                                |
+| `.country`                 | string   | The country the mouth stands in. Editorial — see the note on disambiguation below                                                         |
+| `.parent`                  | int32    | Index in `rivers[]` of the smallest named river containing this one, `null` at a river that nests in nothing                              |
+| `.bbox`                    | float[4] | `[west, south, east, north]` of the named span, in degrees, over the outlet point of every reach in it                                    |
+| `.lo`, `.hi`               | int32    | The named span as `riverIndex` bounds, inclusive. `hi` is the mouth reach's own `riverIndex`                                              |
+| `.color`                   | int32    | Index into `palette`, resolved at build time so no two touching spans share a colour                                                      |
+| `generatedAt`              | string   | ISO 8601 UTC, when this file was compiled. There is no schedule, so this is how a client tells one release from another                   |
+| `palette`                  | string[] | The colors named rivers are drawn in                                                                                                      |
+| `unnamed`                  | string   | The colour unnamed water keeps                                                                                                            |
+| `namedReaches`             | int64    | How many reaches fall inside some named span                                                                                              |
+| `first`, `bounds`, `stops` | arrays   | The same assignment precompiled as a MapLibre `step` expression over `riverIndex`: `stops[k]` holds until `bounds[k]`, -1 meaning unnamed |
+
+Because the spans are `riverIndex` values, and `riverIndex` is positional and **not stable across rebuilds**, this file is published beside the tiles in `group=0` and is only valid against the network
+release it was compiled from. A client must fetch it from the same release it draws, never bundle a copy: a stale copy keeps painting confidently onto reach numbers that have moved. `riverId` and
+`outletRiverId` are the stable half of each row and are what a client should persist if it stores a name across releases.
+
+**Coverage and currency.** The table is a curated list of rivers people look for, not a gazetteer: 477 names over 217 terminal watersheds at present — 260 of them named tributaries of another named
+river — covering the large systems and their principal tributaries. There is no schedule. Names are added and corrected as edits accumulate, and the file is regenerated whenever the network is rebuilt
+or a name is edited — so it may go months without changing and may change twice in a week. **Any client caching it must treat it as refreshable rather than fixed**, and no downstream product should
+assume that a river absent today will stay absent or that a spelling is final. Clients that hold a local copy should revalidate on a fixed monthly boundary, the 5th at 00:00 UTC, matching the cadence
+the monthly retrospective products already use, and refetch on any change to the network release. `generatedAt` is what makes that revalidation cheap: it identifies the release without the client
+having to compare the body.
+
+**Disambiguation.** The name plus the watershed does not uniquely identify a river and cannot be made to. Ten names are currently duplicated, and three of those collide on the watershed name as well:
+the British and the Canadian `Severn` are distinct terminal watersheds that share a name, so are the two `Colorado`s, and the second `Yenesei` nests inside the first. `country`, `parent`, and
+`bbox` exist for that reason and for no other — they are what lets a results list say which river a row is, and what lets a client frame the river it found rather than drop a pin on its mouth.
+
+`country` is the mouth's country, which is a fact about the mouth rather than about the river, and the two part company often enough to matter: the Colorado's mouth is genuinely in Mexico and the
+Nile's is genuinely in Egypt, and only one of those reads oddly as a label. It is therefore an **editorial** column. The enrichment tool fills it from a Natural Earth admin-0 join — by containment,
+falling back to the nearest coast within one degree, because a river mouth sits on the coastline and the coastline in a 1:50m dataset is a generalisation of it — and then never touches a filled cell
+again, so the value in the CSV is whatever a person last decided it should be. Rivers that cross many countries carry only their mouth's; there is no list of every country a span touches.
+
+<mark>`country` is populated for all 477 rows from the automatic join, and has not yet been reviewed by hand. 139 rows were attributed to the nearest coast rather than to a polygon containing them,
+and 84 sit in a different country from the middle of their own bounding box; both populations are mostly correct, but that is where an error would be. The enrichment tool prints both counts.</mark>
+
+#### Geometry storage
+
+Every geometry product in the bucket — streams, catchments, confluences, outlines, basins — is stored the same way.
+
+| Property                   | Value                                                                                       |
+|----------------------------|---------------------------------------------------------------------------------------------|
+| CRS                        | EPSG:3857 (web mercator)                                                                    |
+| Coordinate grid            | snapped to 1 m                                                                              |
+| GeoParquet version         | 1.1                                                                                         |
+| Geometry encoding          | geoarrow (native), **not** WKB                                                              |
+| Geometry types             | streams MultiLineString, confluences Point, catchments, outlines, and basins MultiPolygon   |
+| Coordinate column encoding | `BYTE_STREAM_SPLIT`, dictionary encoding off                                                |
+| Compression                | zstd level 3                                                                                |
+| Row group size             | 500 rows for streams, catchments, basins; 1 row for `groups.geo.parquet`; default otherwise |
+
+These choices are one decision, not seven. A power-of-two metre grid is exactly representable in float64, so snapping to 1 m leaves ~30 trailing zero mantissa bits in every coordinate; the geoarrow
+encoding then stores x and y as separate columns instead of interleaving them into WKB blobs, and `BYTE_STREAM_SPLIT` groups the resulting zero bytes so zstd can collapse them. Together they cut the
+hydrography roughly 60-70%. None of the three is worth much alone — applied to unsnapped coordinates the same encoding makes files *larger*. There is no equivalent in degrees, because no useful
+decimal grid (1e-7 and friends) is a power of two. zstd level 3 rather than the default 1 because the row order creates locality that is beyond snappy's window and inside zstd's: on one 352,529 reach
+region, Hilbert order plus zstd is 380 MB against 1,247 MB unordered plus snappy, and read speed is flat across zstd levels so the level is purely a size against write time choice.
+
+Snapping to a 1 m grid moves a vertex at most 0.71 m, and web mercator inflates distances by 1/cos (lat), so the true ground error is worst at the equator and finer toward the poles. The TDX-Hydro
+source is a 1/9 arcsec DEM, about 3.4 m, so the snap sits well inside the resolution the data was derived from. `Length`, `areaM2`, and the contributing areas are attributes carried from the source
+rather than measured on the projected geometry, so web mercator's distortion never reaches them, and the `lat`/`lon` outlet columns in the metadata stay in degrees.
+
+Stream geometry is otherwise at source resolution: no line simplification is applied to the published streams, because a tolerance baked into the file applies at every zoom and can never be undone.
+Generalizing for a zoom is tippecanoe's job when the tiles are built. The one exception is the traced line through a lake, see below.
+
+<mark>Consumers who need geographic coordinates must reproject. The inverse mercator transform is analytic, so degrees come back to within the 1 m snap.</mark>
+
+#### Lakes and reservoirs
+
+A version controlled lake table lists each lake's inlet reaches and its single outlet reach. For each lake
+
+- every reach in the interior between the inlets and the outlet is removed from the network and its catchment area (`areaM2`) folded into the outlet, so drained area is conserved;
+- inlets whose contributing area (`DSContArea`) is below 100 km2 are too small to route into the lake on their own, so their whole upstream branch is absorbed into the lake as well;
+- the surviving inlets point directly at the outlet, i.e. `nextRiverId` is the outlet;
+- the outlet reach's geometry becomes the line traced from each significant inlet (Strahler order 4 or more, plus each lake's largest inlet) through the lake to the outlet, merged into a
+  MultiLineString when there is more than one, and generalized at 100 m because it is a synthetic line across open water rather than a surveyed channel;
+- the outlet reach is protected from every other simplification step, so it keeps its identity and its short length.
+
+A lake therefore appears as one reach with a branched line through it, and the catchment of that reach is the lake plus the drainage of everything absorbed into it.
+
+#### Network simplification
+
+The published network is smaller than TDX-Hydro because, per region and in this order, the pipeline
+
+1. drops whole terminal watersheds on the version controlled drop lists: no-runoff basins in the Sahara, Gobi, and Australian interior, small islands, small ocean draining watersheds, and manually
+   excluded watersheds;
+2. drops every remaining terminal watershed whose outlet contributing area is under 250 km2;
+3. applies the lake edits above;
+4. repairs zero length reaches, which the source DEM processing leaves at some confluences and coasts;
+5. folds orphaned coastal order 1 reaches into the neighbour they shared a confluence with;
+6. dissolves order 2 headwaters whose upstreams are all order 1 into a single reach;
+7. folds order 1 reaches that join an order 2 or higher reach into a sibling at the same confluence, moving area but not geometry;
+8. consolidates reaches shorter than 2 km into a neighbour that is not separated from them by a confluence, so routing is numerically stabler and fewer results are stored.
+
+Every edit is recorded as a keeper to members mapping and replayed on the catchments, so the catchment coverage matches the published network exactly, and an original TDX-Hydro reach can be mapped to
+the v3 reach that now represents it.
+
+#### Vector tiles
+
+Three tilesets are published in `group=0`, all built with tippecanoe from the parquet products above, so there is no second simplified copy of any geometry.
+
+| Tileset              | Zooms | Layers                          | Notes                                                                                                                                                                                                                                                                                             |
+|----------------------|-------|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `streams.pmtiles`    | 0-11  | `streams`                       | Tiled per group then joined. Carries every attribute except `musk_k`, `musk_x`, `velocity_factor`, and `USContArea`. Reaches appear by Strahler order: 7+ at every zoom, 6+ from z5, 4+ from z7, 2+ from z9; order 1 reaches are not tiled at any zoom; the densest tiles drop features as needed |
+| `catchments.pmtiles` | 0-10  | `catchments`, `catchment_lines` | Level 3 basins at z0-3, then one level per zoom, level 8 at z8-9, leaf catchments at z10; clients overzoom past z10. Every feature carries `riverId` and `riverIndex`, and the basin bands carry the basin columns. Region footprints (level 2) are included as lines at every zoom               |
+| `groups.pmtiles`     | 0-12  | `groups`                        | The group outlines with `groupId`                                                                                                                                                                                                                                                                 |
+
+Every catchment band is tiled twice: `catchments` holds the polygons for fills and hit testing, and `catchment_lines` holds their boundaries for strokes. Clipping a polygon to a tile has to close the
+ring along the tile edge, so stroking the polygon layer draws the tile grid across the map; clipping a line does not. **Style fills from `catchments` and strokes from `catchment_lines`, never stroke
+the polygon layer.** Each band's geometry is cut at a quarter pixel of the band's finest zoom, rounded to a power of two (32 m for the z10 leaf, 64 m at z9, and so on), and tippecanoe generalizes
+again per zoom on top of that.
 
 ### Flood Forecast Products
 
@@ -377,27 +670,33 @@ The internal layout of `fldpln.zarr` is documented in [Dataset Structure and Sch
 
 Note: All times are given in UTC.
 
-| Product Type                | Category           | Format     | Update Frequency         | Updates Available | Size               |
-|:----------------------------|:-------------------|:-----------|:-------------------------|:------------------|:-------------------|
-| Hydrography (`group=0`)     | Model Sources      | PMTiles    | None                     | N/A               |                    |
-| Hydrography (by group)      | Model Sources      | GeoParquet | None                     | N/A               |                    |
-| Routing Configs (by group)  | Model Sources      | Parquet    | None                     | N/A               |                    |
-| Forecast 3-hourly Discharge | Forecasts          | Zarr v3    | Daily @ 00:00            | 6am-12pm          | 150 GB             |
-| Esri Animation Tables       | Forecasts          | CSV        | Daily @ 00:00            | 6am-12pm          | 120 x 120 MB       |
-| Map Stylesets               | Forecasts          | bin + JSON | Daily @ 00:00            | 6am-12pm          |                    |
-| Alerts                      | Forecasts          | CSV        | Daily @ 00:00            | 6am-12pm          | 500 MB             |
-| Warm States                 | Forecasts          | Parquet    | Daily @ 00:00            | 6am-12pm          |                    |
-| Hourly Discharge            | Retrospective      | Zarr v3    | Daily @ 00:00            | by 1am same day   | 10 TB              |
-| Daily Discharge             | Retrospective      | Zarr v3    | Daily @ 00:00            | by 1am same day   | 500 GB             |
-| Monthly Average Discharge   | Retrospective      | Zarr v3    | Monthly on 5th at 00:00  | by 1am same day   | ~20 GB             |
-| Yearly Average Discharge    | Retrospective      | Zarr v3    | Yearly on Jan 5 at 00:00 | by 1am same day   | ~2 GB              |
-| Annual Maximums Discharge   | Retrospective      | Zarr v3    | Yearly on Jan 5 at 00:00 | by 1am same day   | ~1 GB              |
-| Return Periods              | Retrospective      | Zarr v3    | None                     | N/A               |                    |
-| Flow Duration Curves        | Retrospective      | Zarr v3    | None                     | N/A               |                    |
-| Forecast Flood Extents      | Flood Maps         | GeoParquet | Daily @ 00:00            | 6am-12pm          | <5 GB              |
-| Flood Map Tiles (ARC)       | Flood Maps         | GeoTIFF    | None                     | N/A               | <10 GB             |
-| FLDPLN Libraries            | Flood Maps         | Zarr v3    | None                     | N/A               |                    |
-| Extended Forecast Discharge | Extended Forecasts | ??         | Monthly 1 and 15         |                   | TBD ballpark 150GB |
+| Product Type                | Category           | Format            | Update Frequency               | Updates Available | Size               |
+|:----------------------------|:-------------------|:------------------|:-------------------------------|:------------------|:-------------------|
+| Stream tiles (`group=0`)    | Model Sources      | PMTiles           | None                           | N/A               | ~3.2 GB            |
+| Catchment tiles (`group=0`) | Model Sources      | PMTiles           | None                           | N/A               | ~5.5 GB            |
+| Group tiles (`group=0`)     | Model Sources      | PMTiles           | None                           | N/A               | ~180 MB            |
+| Global metadata (`group=0`) | Model Sources      | Parquet + Zarr v3 | None                           | N/A               | ~215 MB + ~70 MB   |
+| Basin hierarchy (`group=0`) | Model Sources      | GeoParquet        | None                           | N/A               | ~1 GB              |
+| Group outlines (`group=0`)  | Model Sources      | GeoParquet        | None                           | N/A               | ~120 MB            |
+| River names (`group=0`)     | Model Sources      | JSON              | Irregular, as edits accumulate | N/A               | ~105 kB            |
+| Hydrography (by group)      | Model Sources      | GeoParquet        | None                           | N/A               | ~15 GB all groups  |
+| Routing Configs (by group)  | Model Sources      | Parquet           | None                           | N/A               |                    |
+| Forecast 3-hourly Discharge | Forecasts          | Zarr v3           | Daily @ 00:00                  | 6am-12pm          | 150 GB             |
+| Esri Animation Tables       | Forecasts          | CSV               | Daily @ 00:00                  | 6am-12pm          | 120 x 120 MB       |
+| Map Stylesets               | Forecasts          | bin + JSON        | Daily @ 00:00                  | 6am-12pm          |                    |
+| Alerts                      | Forecasts          | CSV               | Daily @ 00:00                  | 6am-12pm          | 500 MB             |
+| Warm States                 | Forecasts          | Parquet           | Daily @ 00:00                  | 6am-12pm          |                    |
+| Hourly Discharge            | Retrospective      | Zarr v3           | Daily @ 00:00                  | by 1am same day   | 10 TB              |
+| Daily Discharge             | Retrospective      | Zarr v3           | Daily @ 00:00                  | by 1am same day   | 500 GB             |
+| Monthly Average Discharge   | Retrospective      | Zarr v3           | Monthly on 5th at 00:00        | by 1am same day   | ~20 GB             |
+| Yearly Average Discharge    | Retrospective      | Zarr v3           | Yearly on Jan 5 at 00:00       | by 1am same day   | ~2 GB              |
+| Annual Maximums Discharge   | Retrospective      | Zarr v3           | Yearly on Jan 5 at 00:00       | by 1am same day   | ~1 GB              |
+| Return Periods              | Retrospective      | Zarr v3           | None                           | N/A               |                    |
+| Flow Duration Curves        | Retrospective      | Zarr v3           | None                           | N/A               |                    |
+| Forecast Flood Extents      | Flood Maps         | GeoParquet        | Daily @ 00:00                  | 6am-12pm          | <5 GB              |
+| Flood Map Tiles (ARC)       | Flood Maps         | GeoTIFF           | None                           | N/A               | <10 GB             |
+| FLDPLN Libraries            | Flood Maps         | Zarr v3           | None                           | N/A               |                    |
+| Extended Forecast Discharge | Extended Forecasts | ??                | Monthly 1 and 15               |                   | TBD ballpark 150GB |
 
 ## Dataset Structure and Schematics
 
@@ -433,9 +732,11 @@ value on the `recurrence_interval` axis, 1.5 included, is exact in float32, so a
 - `riverId`
     - int32
     - The order of the ids is the same in every Zarr. To get this list, read the coordinate array off any store or refer to the hydrography datasets.
-    - **The axis is in topological order, not ascending id order.** It follows the same hydrologically meaningful division as the computational units, so a river's *position* on the axis is meaningful
-      and an id cannot be located by binary search on the array as published. That position is the `riverIndex`, and it is the join key shared by the vector tiles, the map style tables, and every
-      Zarr.
+    - **The axis is in topological order, not ascending id order.** It is the hydrography row order described in [Row order, `riverIndex`, and
+      `upstreamCount`](#row-order-riverindex-and-upstreamcount):
+      groups ascending, watersheds along a Hilbert curve within a group, reaches in depth first post-order within a watershed. A river's *position* on the axis is therefore meaningful, every group and
+      every upstream subset is one contiguous slice, and an id cannot be located by binary search on the array as published. That position is the `riverIndex`, and it is the join key shared by the
+      vector tiles, the map style tables, the hydrography parquet, and every Zarr.
 - `time`
     - int32, counted in hours, including on the daily, monthly and yearly axes, which are still expressed in hours rather than in their own step unit.
     - Left aligned time windows. That is, the corresponding value applies from the stated time step, t, until the start of the next time step, t+1.
@@ -691,6 +992,44 @@ and in the published data. The scripts and intermediate files below still use th
         return-periods.zarr
         fdc.zarr
 ```
+
+### Hydrography preparation
+
+The hydrography is built once per release, not daily, by the `tdxhydro-postprocessing` repository (`scripts/pipeline.sh`). It turns the raw TDX-Hydro stream and basin geopackages into the products
+in [Hydrography](#hydrography). Two directories, two environment variables:
+
+```text
+$TDXHYDRO_ROOT/                         the raw TDX-Hydro geoparquet the pipeline reads, an input rather than an output
+    TDX_streamnet_<region>_01.parquet
+    TDX_streamreach_basins_<region>_01.parquet
+    global_basins/                      the frozen basin hierarchy, generated once from the raw data and shared by every release
+$RFS_DATA_ROOT/
+    hydrography/group=<id>/             the published dataset, uploaded as is to s3://river-forecast-system/v3/hydrography/
+    hydrography-scratchfiles/           regions/, pmtiles/, logs/ — per region intermediates no consumer needs
+```
+
+Version controlled inputs live in the repository's `network_data/`: `groupIds_table.csv` (`outletRiverId` to `groupId`), `lake_table.csv` (inlet, outlet, lake id, endorheic flag, trace flag),
+`dropped_watersheds/*.csv` (outlets to remove), and `tdxhydro_splits/` (the per region id offsets and the duplicated watersheds to drop where regions overlap).
+
+The steps, in order. Steps 3 and 4 run per region in parallel; everything else is global.
+
+| # | Script                    | Scope                | Produces                                                                                                                                                                                                                                                                                                                                                                   |
+|---|---------------------------|----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1 | `1_translate_tdxhydro.py` | per region, once     | Raw geopackages to geoparquet. Offsets `LINKNO` by a per region constant so ids are globally unique, adds the geodesic length, region id, and outlet lon/lat, drops watersheds duplicated between overlapping regions, and nodes the source basin coverage so later dissolves are exact                                                                                    |
+| 2 | `2_global_basins.py`      | all regions, once    | The frozen basin hierarchy: Pfafstetter-like codes on the raw network, then the source basins dissolved into one polygon set per level (2..8), each cut to its zoom band, holes closed. Kept beside the raw data, not rebuilt per release                                                                                                                                  |
+| 3 | `3_simplify_streams.py`   | per region           | `streams_*`, `metadata_*`, `confluences_*` in the region's scratch directory. Applies the [network simplification](#network-simplification) and [lake edits](#lakes-and-reservoirs), assigns `groupId`, computes the Muskingum parameters, sets the nested-set row order, and records every edit in `mods/*.json`                                                          |
+| 4 | `4_create_catchments.py`  | per region           | `catchments_*`: the source basins redirected along step 3's edits and dissolved into one polygon per surviving reach, projected, coverage simplified at 20 m, snapped to 1 m, in the published row order                                                                                                                                                                   |
+| 5 | `5_concatenate_global.py` | all regions          | Orders the groups by `groupId`, stamps the global `riverIndex` by offset arithmetic, checks that no reach drains across a group, that `riverId` is globally unique, and that the nested-set property holds; writes `group=0/metadata.parquet` and `metadata.zarr`; splits every region's tables into `group=XXX/`, dropping `groupId`; writes the leaf catchment tile band |
+| 6 | `6_publish_basins.py`     | all regions          | Stamps the frozen basins with this release's `riverId`/`riverIndex` (through the keeper map replayed from `mods/`), writes `group=0/basins_level{L}.geo.parquet` and the basin tile bands, and dissolves each group's catchments into `boundary_XXX.geo.parquet` and `group=0/groups.geo.parquet`                                                                          |
+| 7 | `tile_streams.sh`         | per group, then join | `streams.pmtiles`: one tippecanoe run per group, largest first, joined with `tile-join`                                                                                                                                                                                                                                                                                    |
+| 8 | `tile_catchments.sh`      | per band             | `catchments.pmtiles`: every basin level and the leaf band tiled twice, polygons and boundary lines, then joined                                                                                                                                                                                                                                                            |
+| 9 | `tile_groups.sh`          | global               | `groups.pmtiles`                                                                                                                                                                                                                                                                                                                                                           |
+
+Every step is idempotent at the granularity of its output files: a step whose outputs exist exits successfully without rewriting them, so a rebuild after a change touches only what depends on it.
+Reordering the rows (step 5) never requires rerunning the simplification (step 3) or the catchments (step 4); it permutes rows and derives integers.
+
+Optionally, `extras_identify_id_map.py` writes a two column table mapping every original TDX-Hydro reach in every region, about 16 million, to the v3 `riverId` that now represents it, or null when it
+was dropped or is in a region v3 does not cover.
 
 ### Log/Status Feeds
 
