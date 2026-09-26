@@ -64,6 +64,32 @@ The main changes in v2 compared to v1 are:
 
 ## Available Products
 
+<!-- BEGIN product-short-names -->
+
+### Product short names
+
+Each product has a short name, unique within this model version and stable across releases. It is
+how the product is referred to outside the bucket layout: the data store addresses a product's page
+as `/rfs-data-store/datasets/v2/<short name>`, which makes the name a permalink other tools
+can build without asking the site. Names are lower case and hyphenated, and say what the product is
+rather than where it is filed — a product listed under two categories still has one name.
+
+| Short name | Product | Categories | Format |
+|---|---|---|---|
+| `streams` | Stream centerlines | Hydrography | GeoPackage |
+| `catchments` | Catchment boundaries | Hydrography | Parquet |
+| `lakes` | Lakes and nexus points | Hydrography | GeoPackage |
+| `retrospective-hourly` | Hourly discharge | Retrospective | Zarr |
+| `retrospective-daily` | Daily discharge | Retrospective | Zarr |
+| `retrospective-monthly` | Monthly discharge | Retrospective | Zarr |
+| `retrospective-yearly` | Yearly discharge | Retrospective | Zarr |
+| `annual-maximums` | Annual maximums | Retrospective | Zarr |
+| `return-periods` | Return periods | Retrospective | Zarr |
+| `flow-duration-curves` | Flow duration curves | Retrospective | Zarr |
+| `forecast-15day` | 15-day ensemble forecast | Forecasts | Zarr |
+
+<!-- END product-short-names -->
+
 - Hydrography, configs, retrospective: [s3://geoglows-v2](http://geoglows-v2.s3-website-us-west-2.amazonaws.com/)
 - Forecasts: [s3://geoglows-v2-forecasts](http://geoglows-v2-forecasts.s3-website-us-west-2.amazonaws.com/)
 - Forecast map tables and records [s3://geoglows-v2-forecast-products](http://geoglows-v2-forecast-products.s3-website-us-west-2.amazonaws.com/)

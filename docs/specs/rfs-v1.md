@@ -57,6 +57,25 @@ The main features of v1 compared to the Streamflow Prediction Tool (SPT) instanc
 
 ## Available Products
 
+<!-- BEGIN product-short-names -->
+
+### Product short names
+
+Each product has a short name, unique within this model version and stable across releases. It is
+how the product is referred to outside the bucket layout: the data store addresses a product's page
+as `/rfs-data-store/datasets/v1/<short name>`, which makes the name a permalink other tools
+can build without asking the site. Names are lower case and hyphenated, and say what the product is
+rather than where it is filed — a product listed under two categories still has one name.
+
+| Short name | Product | Categories | Format |
+|---|---|---|---|
+| `streams` | Regional stream networks | Hydrography | NetCDF |
+| `retrospective-daily` | ERA5 historical simulation | Retrospective | NetCDF |
+| `return-periods` | Return periods | Retrospective | NetCDF |
+| `forecast-15day` | 15-day ensemble forecast | Forecasts | NetCDF |
+
+<!-- END product-short-names -->
+
 - Hydrography: HydroShare https://hydroshare.org/resource/9241da0b1166492791381b48943c2b4a/
 - Flood Forecasts: ECMWF FTP or API
 - Retrospective Simulation: ECMWF FTP or API
