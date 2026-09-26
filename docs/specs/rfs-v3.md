@@ -103,6 +103,7 @@ These change the values themselves rather than how they are read, so a differenc
 - All v3 data are under a single bucket, `s3://river-forecast-system-v3/`, served through the CloudFront CDN at `https://d2bu4ozwm6rcbq.cloudfront.net`.
 - Within each product, subdivisions use hive partition style names
     - Hydrography is organized by HydroBASINS level 2 region, `region=<id>`, e.g. `region=1020000010`, with the products that span every region in `hydrography/global/`
+    - Routing configurations are organized by the same regions in a tree of their own, `routing/region=<id>`, derived from the hydrography but not published in it
     - Forecasts are organized by a sequence of year, month, day dividers: `year=YYYY/month=MM/day=DD`
     - Flood maps are organized by 1x1 degree tiles labeled by latitude and longitude: `lat=YYY/lon=XXX`
 - Monthly and yearly averages are available in timeseries and timestep chunked forms in a single zarr
@@ -172,9 +173,12 @@ s3://river-forecast-system-v3/
 │       │   ├── headwater_dissolves.json
 │       │   ├── branches_to_prune.json
 │       │   └── short_consolidations.json
-│       ├── routing.parquet                     # from river-route - Muskingum k/x and connectivity
-│       ├── gridweights_ERA5_<id>.nc            # from river-route - runoff grid to catchment weights, one per forcing grid
 │       └── synthetic_rating_curve.parquet      # from ARC, for routing, FIM? Q_baseflow depends on a modeled value! - TBD
+├── routing/                                    # routing configurations, derived from hydrography/ but not by its pipeline
+│   └── region=<id>/                            # the regions of hydrography/, rivers in the same riverIndex order
+│       ├── routing.parquet                     # Muskingum k/x and connectivity, for river-route
+│       ├── gridweights_ERA5_<id>.nc            # runoff grid to catchment weights, one per forcing grid, the standard format
+│       └── gridweights_ERA5_<id>.parquet       # an extra copy of the ERA5 weights, in the layout jsrr reads fastest
 ├── retrospective/
 │   ├── hourly.zarr/
 │   ├── daily.zarr/
@@ -256,13 +260,9 @@ Per region products, in `region=<id>/`:
 | `confluences_<id>.geo.parquet`   | GeoParquet | Junctions of the stream network, TDX-Hydro derived                                         |
 | `boundary_<id>.geo.parquet`      | GeoParquet | The region's outline                                                                       |
 | `mods/*.json`                    | JSON       | The edits made to the source TDX-Hydro, see [Modification records](#modification-records)  |
-| `routing.parquet`                | Parquet    | Muskingum routing parameters for river-route: `river_id`, `next_river_id`, `k`, `x`        |
-| `gridweights_<forcing>_<id>.nc`  | NetCDF     | Runoff grid cell to catchment intersection weights for ERA5, IFS, GLDAS, etc.              |
 | `synthetic_rating_curve.parquet` | Parquet    | Synthetic rating curves from ARC, used for routing and flood inundation mapping            |
 
-`routing.parquet` and `gridweights_<forcing>_<id>.nc` are written by river-route (3.0.0).
-They are the exact files used to generate official routing outputs.
-`routing.parquet` is an exact duplicated of the metadata and streams tables with only the columns required for routing.
+The routing configurations derived from this network are published apart from it, see [Routing Configurations](#routing-configurations).
 
 #### Row order, `riverIndex`, and `upstreamCount`
 
@@ -450,6 +450,32 @@ ring along the tile edge, so stroking the polygon layer draws the tile grid acro
 the polygon layer.** Each band's geometry is cut at a quarter pixel of the band's finest zoom, rounded to a power of two (32 m for the z10 leaf, 64 m at z9, and so on), and tippecanoe generalizes
 again per zoom on top of that.
 
+### Routing Configurations
+
+The files the router needs to route a region, short name `routing-configs`, are published under `routing/`, partitioned by the same `region=<id>` as the hydrography and kept apart from it.
+They are the exact files used to generate official routing outputs. They are derived from the published hydrography after it is built, by the model scripts (`v3-model-scripts`,
+`retrospective/1_prepare_hydrography.py`), which only read it, so a new forcing grid changes `routing/` and never `hydrography/`. The one exception is the Muskingum `musk_k` and `musk_x`, which
+the hydrography pipeline computes so that they are attributes of the GIS files. Every other routing configuration is made here.
+
+Per region products, in `routing/region=<id>/`:
+
+| File                               | Format  | Description                                                                                    |
+|------------------------------------|---------|------------------------------------------------------------------------------------------------|
+| `routing.parquet`                  | Parquet | Muskingum routing parameters for river-route: `river_id`, `next_river_id`, `k`, `x`            |
+| `gridweights_<forcing>_<id>.nc`    | NetCDF  | Runoff grid cell to catchment intersection weights for ERA5, IFS, GLDAS, etc., the standard    |
+| `gridweights_ERA5_<id>.parquet`    | Parquet | An extra copy of the ERA5 weights for jsrr, the browser router. It does not replace the netCDF |
+
+Every file lists the region's rivers in `riverIndex` order, which is topological. The router pairs weights with rivers by position, not by id: lateral inflow column i is routed into river i, so
+a region's files must agree with each other and with the hydrography's row order.
+
+`routing.parquet` is an exact duplicate of the metadata and streams tables' `riverId`, `nextRiverId`, `musk_k` and `musk_x`, renamed to the columns river-route reads, one row per reach in a
+single row group. Nothing in it is recomputed. `gridweights_<forcing>_<id>.nc` is one row per runoff-cell-to-catchment intersection — `river_id`, `x_index`, `y_index`, `x`, `y`, `area_sqm`,
+`proportion` — stamped with the grid file and the catchments it was cut from. It is named for the forcing grid, so each grid needs its own.
+
+`gridweights_ERA5_<id>.parquet` holds the netCDF's rows without `x` and `y`, which jsrr does not read: `river_id`, `x_index` and `y_index` as int32, `area_sqm` and `proportion` as float32,
+snappy compressed, without dictionary encoding, in one row group. That is the layout jsrr was measured to read fastest, 1.14 MB in 12 ms for region 7020014250's 95,030 weights. jsrr refuses a
+region unless every river in `routing.parquet` has a weight and every weight names one of its rivers.
+
 ### Flood Forecast Products
 
 The daily 15-day forecast is published under `forecasts15/`, partitioned `year=YYYY/month=MM/day=DD/`. Each day's partition holds
@@ -557,7 +583,7 @@ Note: All times are given in UTC.
 | Global metadata (`global/`) | Model Sources | Parquet + Zarr v3 | None                     | N/A               | ~215 MB + ~70 MB    |
 | Hydrography (by region)     | Model Sources | GeoParquet        | None                     | N/A               | ~15 GB all regions  |
 | Modification records        | Model Sources | JSON              | None                     | N/A               | ~165 MB             |
-| Routing Configs (by region) | Model Sources | Parquet + NetCDF  | None                     | N/A               | ~420 MB             |
+| Routing Configs (by region) | Model Sources | Parquet + NetCDF  | None                     | N/A               | ~365 MB             |
 | Forecast 3-hourly Discharge | Forecasts     | Zarr v3           | Daily @ 00:00            | 6am-12pm          | 150 GB              |
 | Esri Animation Tables       | Forecasts     | CSV               | Daily @ 00:00            | 6am-12pm          | 120 x 120 MB        |
 | Map Stylesets               | Forecasts     | bin + JSON        | Daily @ 00:00            | 6am-12pm          |                     |
@@ -953,7 +979,9 @@ Reordering the rows (step 5) never requires rerunning the simplification (step 3
 Then, outside the numbered steps: optionally, `extras_identify_id_map.py` writes `global/tdxhydro_to_v3_id_map.parquet`, a two column table mapping every original TDX-Hydro
 reach in every region, about 16 million, to the v3 `riverId` that now represents it, or null when it was dropped or is in a region v3 does not cover.
 
-`routing.parquet` and the gridweights are produced by river-route after this pipeline finishes and written into the same `region=<id>/` partitions.
+The pipeline writes no routing configuration except the Muskingum `musk_k` and `musk_x` step 3 computes, which are kept in the hydrography so that they are attributes of the GIS files.
+`routing.parquet` and the grid weights are derived from its published output afterwards, by the model scripts, into `routing/region=<id>/` beside `hydrography/`, see
+[Routing Configurations](#routing-configurations).
 
 ### Log/Status Feeds
 
@@ -1026,6 +1054,15 @@ All exports land under `s3://river-forecast-system-v3/`, see [Organization on S3
 2. Delete runoff data dated __older than 5 days__
 
 ## Changelog
+
+### 2026-09-26 (routing)
+
+- **Routing configurations moved out of the hydrography into `routing/region=<id>/`.** `routing.parquet` and `gridweights_ERA5_<id>.nc` were published in `hydrography/region=<id>/`; they now
+  live in a tree of their own beside it, partitioned by the same regions. See [Routing Configurations](#routing-configurations).
+- **The hydrography pipeline holds no routing configuration** except `musk_k` and `musk_x`, which it still computes so that they are attributes of the GIS files. The routing files are derived
+  from the published hydrography by the model scripts, which only read it, so the release of one no longer waits on or rewrites the other.
+- **Added `gridweights_ERA5_<id>.parquet`**, an extra copy of the ERA5 weights in the layout jsrr, the browser router, reads fastest. The netCDF stays the weights' standard format.
+- Readers of `routing.parquet` or the grid weights must read them from `routing/region=<id>/`. Routing configs are ~365 MB, the parquet weights included.
 
 ### 2026-09-20
 
