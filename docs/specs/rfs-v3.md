@@ -106,6 +106,8 @@ These change the values themselves rather than how they are read, so a differenc
     - Routing configurations are organized by the same regions in a tree of their own, `routing/region=<id>`, derived from the hydrography but not published in it
     - Forecasts are organized by a sequence of year, month, day dividers: `year=YYYY/month=MM/day=DD`
     - Flood maps are organized by 1x1 degree tiles labeled by latitude and longitude: `lat=YYY/lon=XXX`
+- The runoff forcings the router reads are kept in the bucket under `forcings/`: ERA5 one Zarr per year, `era5/YYYY.zarr`, and IFS one directory of GRIB files per initialization,
+  `ifs/YYYYMMDDHH/`
 - Monthly and yearly averages are available in timeseries and timestep chunked forms in a single zarr
 - The retrospective simulation is updated daily and is typically available by 01:00 UTC
 - Forecast warnings are published as `alerts.csv`, formatted for CAP alerts, instead of a warnings parquet file
@@ -179,6 +181,12 @@ s3://river-forecast-system-v3/
 │       ├── routing.parquet                     # Muskingum k/x and connectivity, for river-route
 │       ├── gridweights_ERA5_<id>.nc            # runoff grid to catchment weights, one per forcing grid, the standard format
 │       └── gridweights_ERA5_<id>.parquet       # an extra copy of the ERA5 weights, in the layout jsrr reads fastest
+├── forcings/                                   # the runoff the router reads, see Input Datasets
+│   ├── era5/
+│   │   └── YYYY.zarr/                          # Zarr v3, ro only, chunks 16 x 16 on lat/lon and the whole year on time
+│   └── ifs/
+│       └── YYYYMMDDHH/                         # one directory per forecast initialization
+│           └── <filename>.grib                 # the IFS GRIB files for that initialization
 ├── retrospective/
 │   ├── hourly.zarr/
 │   ├── daily.zarr/
@@ -877,13 +885,28 @@ kernel:  depth(fpp) = max over relations (DoF - DTF) + fill      no raster ships
 
 ## Input Datasets
 
+The runoff forcings are kept at the top level of the bucket under `forcings/`, one tree per source, see [Organization on S3](#organization-on-s3).
+
 ### ECMWF IFS
 
 See the MARS requests in [Flood Forecast Products](#flood-forecast-products).
 
+IFS runoff is stored as GRIB at `forcings/ifs/YYYYMMDDHH/<filename>.grib`, one directory per forecast initialization, named for the initialization date and hour.
+
 ### ERA5 and ERA6
 
-<mark>TBD</mark>
+ERA5 runoff is stored as one Zarr v3 store per year at `forcings/era5/YYYY.zarr`. Each store holds a single data variable, `ro`, the ERA5 runoff.
+
+| Axis      | Chunk        |
+|-----------|--------------|
+| latitude  | 16           |
+| longitude | 16           |
+| time      | -1, the year |
+
+The time axis is never split, so one chunk is a 16 x 16 block of cells over the store's entire year, and a region's whole runoff series is read in one pass over the chunks its cells fall in. The
+chunking is set by that read pattern, not by [Chunking and sharding](#chunking-and-sharding), which governs the discharge stores.
+
+<mark>ERA6 TBD</mark>
 
 ## Implementation Details
 
@@ -1054,6 +1077,12 @@ All exports land under `s3://river-forecast-system-v3/`, see [Organization on S3
 2. Delete runoff data dated __older than 5 days__
 
 ## Changelog
+
+### 2026-09-27 (forcings)
+
+- **Added `forcings/` at the top level of the bucket**, the runoff the router reads. See [Input Datasets](#input-datasets).
+    - `forcings/era5/YYYY.zarr`: one Zarr v3 store per year holding only `ro`, chunked 16 x 16 on latitude and longitude with the time axis unsplit, so a cell's whole series is one chunk read.
+    - `forcings/ifs/YYYYMMDDHH/<filename>.grib`: the IFS GRIB files, one directory per forecast initialization.
 
 ### 2026-09-26 (routing)
 
